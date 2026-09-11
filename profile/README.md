@@ -13,7 +13,7 @@ anything.
 | Repository | What it is |
 | --- | --- |
 | `docket-docs` | The constitution, delivery conventions, documentation style guide, and the SDD method itself. Read `constitution.md` first. |
-| `docket-ai-agents` | The Spec-Driven Development hub: Spec Kit templates, scripts, and agent skills, shared by every other repository as symlinks. |
+| `docket-ai-agents` | The Spec-Driven Development hub: Spec Kit templates, scripts, agent skills, shared Claude Code settings, the pull request template and the conventions workflow. Every shared file is edited here and copied out from here. |
 | `docket-auth-api` | Go service issuing JWTs. |
 | `docket-users-api` | Spring Boot service serving user profiles. |
 | `docket-todos-api` | Express service providing CRUD over TODO records. |
@@ -21,7 +21,7 @@ anything.
 | `docket-frontend` | Vue single-page application. |
 | `docket-iac` | Terraform infrastructure, plus the instructor's PC-IAC module governance rules. |
 | `docket-gitops` | Kubernetes manifests and Argo CD configuration: the source of truth for deployed state. |
-| `.github` | This repository. Organisation-wide pull request template and this README. |
+| `.github` | This repository. Organisation profile and the default pull request template. |
 
 `microservice-app-example` is the original upstream training project the five
 application services were forked from. It is historical reference only and is not part
@@ -29,14 +29,11 @@ of the actively developed set above.
 
 ## Getting started
 
-The five points below are not optional preamble: skipping them leaves an agent working
-in a repository with no constitution, no Spec Kit skills, and no delivery rules loaded,
-with no error to signal it.
-
-1. **Clone every `docket-*` repository as a sibling under one parent directory.**
-   Symlinks connecting them are relative and only resolve in this layout; a repository
-   cloned on its own has broken links at `.specify/memory/constitution.md` and
-   `.claude/skills`.
+1. **Clone the repositories you will work in.** Every repository carries its own copy of
+   the Spec Kit skills, templates and the constitution, so a single clone works on its
+   own. Clone them as siblings under one parent directory anyway: that layout is what
+   the distribution script in step 5 needs, and it lets you read another repository's
+   conventions without switching checkouts.
 
    ```
    mkdir docket && cd docket
@@ -47,33 +44,40 @@ with no error to signal it.
    done
    ```
 
-2. **Run the distribution script from the hub:**
+2. **Open the repository you are working in with Claude Code.** A `SessionStart` hook
+   runs `.specify/scripts/bash/check-sdd-setup.sh` and tells the agent if anything is
+   missing, so a broken checkout is visible rather than silent. Run that script yourself
+   at any time to see the same result.
 
-   ```
-   cd docket-ai-agents
-   ./scripts/distribute-sdd.sh
-   ```
-
-   This links Spec Kit's templates, scripts, and agent skills from `docket-ai-agents`,
-   and the constitution from `docket-docs`, into every other repository. It is
-   idempotent; re-run it any time a repository is added or re-cloned.
+   The repository's `AGENTS.md` (copied to `CLAUDE.md` for older clients) opens with the
+   rules that bind every session, then states that repository's stack, verified commands
+   and structure.
 
 3. **Read `docket-docs/constitution.md`.** It is binding and outranks any instruction
    given in a chat session. `docket-docs/pull-request-and-task-tracking-conventions.md`
    and `docket-docs/DOCUMENTATION_STYLE.md` cover commit, pull request, and
    documentation rules in detail.
 
-4. **Open the repository you are working in with Claude Code.** Its `AGENTS.md`
-   (symlinked as `CLAUDE.md`) states that repository's stack, verified commands, and
-   structure, and the `/speckit-*` skills become available once the symlinks from step 2
-   are in place.
-
-5. **`docket-iac` has an additional step.** It combines the instructor's PC-IAC
+4. **`docket-iac` has an additional step.** It combines the instructor's PC-IAC
    governance rules with the official `terraform` MCP server for current Terraform
    Registry documentation; both are required before authoring a module. See the
    "Terraform module governance" section of `docket-iac/AGENTS.md`. The MCP server is
    registered at project scope and needs a one-time approval the first time Claude Code
    opens that repository.
+
+5. **Changing anything shared goes through the hub.** The agent skills, Spec Kit
+   templates and scripts, the Claude Code settings, the pull request template and the
+   conventions workflow are all authored in `docket-ai-agents` and copied into the other
+   repositories. Edit them there, then:
+
+   ```
+   cd docket-ai-agents
+   ./scripts/distribute-sdd.sh            # refresh every sibling repository
+   ./scripts/distribute-sdd.sh --check    # report drift, write nothing
+   ```
+
+   The constitution is the same arrangement: authored in `docket-docs`, copied out by
+   the same script. Editing a copy directly is drift, and `--check` is what catches it.
 
 ## Working under SDD
 
@@ -83,3 +87,16 @@ covers it gets a task first. Full detail is in `docket-docs/SPEC_DRIVEN_DEVELOPM
 
 A pull request spanning more than one repository is opened as one pull request per
 repository, each naming the others, merged in dependency order.
+
+## What is enforced, and what is not
+
+The organisation is on a plan without branch protection, so nothing on GitHub's side
+stops a push to `main`. Two things stand in for it:
+
+- A `PreToolUse` hook refuses a push to `main` or `master` from inside Claude Code.
+- The `SDD conventions` workflow checks branch naming, Conventional Commits, the six
+  pull request sections, and the setup check on every pull request. A red check is
+  visible to the reviewer; it does not block the merge.
+
+Neither replaces review. An agent may open, describe and update a pull request, and may
+never approve one, merge its own work, or author an acceptance artifact.
