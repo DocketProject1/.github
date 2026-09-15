@@ -1,0 +1,81 @@
+name: Setup Go and run build/test
+description: >
+  Installs the Go toolchain declared by the calling service's own go.mod, then runs
+  its build and test commands as two distinct steps, so a failure in one is never
+  reported as the other.
+
+inputs:
+  working-directory:
+    description: Directory containing the Go module
+    required: true
+  build-command:
+    description: Shell command that builds the service. Skipped when empty.
+    required: false
+    default: ""
+  test-command:
+    description: Shell command that runs the service's test suite
+    required: true
+  coverage-report-path:
+    description: >
+      Path (relative to working-directory) to the coverage report the test command
+      produces, if any. Not read by this action directly; passed through so the
+      caller workflow can hand it to the analysis stage.
+    required: false
+    default: ""
+
+outputs:
+  build-outcome:
+    description: "success, failure, or skipped, from the build step"
+    value: ${{ steps.build.outcome }}
+  test-outcome:
+    description: "success or failure, from the test step"
+    value: ${{ steps.test.outcome }}
+
+runs:
+  using: composite
+  steps:
+    - name: Determine Go version from go.mod
+      id: go-version
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        version=$(grep -E '^go [0-9]' go.mod | awk '{print $2}')
+        if [ -z "$version" ]; then
+          echo "::error::could not read a Go version from go.mod"
+          exit 1
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+    - uses: actions/setup-go@v5
+      with:
+        go-version: ${{ steps.go-version.outputs.version }}
+        cache-dependency-path: ${{ inputs.working-directory }}/go.sum
+
+    - name: Build
+      id: build
+      if: inputs.build-command != ''
+      shell: bash
+      continue-on-error: true
+      working-directory: ${{ inputs.working-directory }}
+      run: ${{ inputs.build-command }}
+
+    - name: Test
+      id: test
+      shell: bash
+      continue-on-error: true
+      working-directory: ${{ inputs.working-directory }}
+      run: ${{ inputs.test-command }}
+
+    - name: Fail the action if build or test failed
+      shell: bash
+      run: |
+        build_outcome="${{ steps.build.outcome }}"
+        test_outcome="${{ steps.test.outcome }}"
+        if [ -n "$build_outcome" ] && [ "$build_outcome" != "success" ]; then
+          echo "::error::build step failed (outcome=$build_outcome)"
+          exit 1
+        fi
+        if [ "$test_outcome" != "success" ]; then
+          echo "::error::test step failed (outcome=$test_outcome)"
+          exit 1
+        fi

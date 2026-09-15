@@ -1,0 +1,138 @@
+name: Docket service CI
+
+# Shared across every DocketProject1 service repository. The source of truth is
+# DocketProject1/.github's .github/workflows/ci.yml; a caller repository never edits
+# a copy of this file, it references this one by a pinned commit SHA or tag. See
+# specs/001-reusable-ci-pipelines/contracts/ci-workflow-contract.md for the full
+# contract this file promises to every caller.
+#
+# CI builds and publishes artifacts only. It MUST NOT deploy anything — see
+# constitution principle 5. There is deliberately no step anywhere in this file that
+# touches a Kubernetes cluster, Argo CD, or any running environment.
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        description: "go | java | node | python | static-site"
+        type: string
+        required: true
+      working-directory:
+        description: Directory containing the service's own source, relative to its repository root
+        type: string
+        required: true
+      build-command:
+        description: Shell command that builds the service. Skipped when empty.
+        type: string
+        required: false
+        default: ""
+      test-command:
+        description: Shell command that runs the service's existing automated test command
+        type: string
+        required: true
+      dockerfile-path:
+        description: Path to the service's own multi-stage Dockerfile, relative to working-directory
+        type: string
+        required: false
+        default: Dockerfile
+      image-name:
+        description: Unqualified GHCR image name for this service
+        type: string
+        required: true
+      coverage-report-path:
+        description: Path (relative to working-directory) to the coverage report the test command produces, if any. Coverage stage is skipped when empty.
+        type: string
+        required: false
+        default: ""
+    secrets:
+      SONAR_TOKEN:
+        description: SonarQube Cloud token. When absent, the analyze job reports skipped, not failed.
+        required: false
+      CHAT_WEBHOOK_URL:
+        description: Chat webhook for failure notifications. When absent, the notify job reports skipped, not failed.
+        required: false
+    outputs:
+      version:
+        description: The version published from this run, or empty if this run did not publish
+        value: ${{ jobs.publish.outputs.version }}
+      image-ref:
+        description: Full ghcr.io reference published from this run, or empty if this run did not publish
+        value: ${{ jobs.publish.outputs.image-ref }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-test:
+    name: Build and test (${{ inputs.language }})
+    runs-on: ubuntu-latest
+    outputs:
+      build-result: ${{ steps.dispatch.outputs.build-outcome }}
+      test-result: ${{ steps.dispatch.outputs.test-outcome }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Exactly one of these runs, selected by inputs.language. Each composite action
+      # runs build and test as two distinct steps internally (FR-005, FR-009: a build
+      # failure is never reported as a test failure or vice versa) and re-exposes both
+      # outcomes here under one stable output name regardless of language.
+      - name: Build and test (go)
+        id: dispatch-go
+        if: inputs.language == 'go'
+        uses: ./.github/actions/setup-go
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          build-command: ${{ inputs.build-command }}
+          test-command: ${{ inputs.test-command }}
+          coverage-report-path: ${{ inputs.coverage-report-path }}
+
+      - name: Build and test (java)
+        id: dispatch-java
+        if: inputs.language == 'java'
+        uses: ./.github/actions/setup-java
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          build-command: ${{ inputs.build-command }}
+          test-command: ${{ inputs.test-command }}
+          coverage-report-path: ${{ inputs.coverage-report-path }}
+
+      - name: Build and test (node)
+        id: dispatch-node
+        if: inputs.language == 'node'
+        uses: ./.github/actions/setup-node
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          build-command: ${{ inputs.build-command }}
+          test-command: ${{ inputs.test-command }}
+          coverage-report-path: ${{ inputs.coverage-report-path }}
+
+      - name: Build and test (python)
+        id: dispatch-python
+        if: inputs.language == 'python'
+        uses: ./.github/actions/setup-python
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          build-command: ${{ inputs.build-command }}
+          test-command: ${{ inputs.test-command }}
+          coverage-report-path: ${{ inputs.coverage-report-path }}
+
+      - name: Build and test (static-site)
+        id: dispatch-static-site
+        if: inputs.language == 'static-site'
+        uses: ./.github/actions/setup-static-site
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          build-command: ${{ inputs.build-command }}
+          test-command: ${{ inputs.test-command }}
+          coverage-report-path: ${{ inputs.coverage-report-path }}
+
+      - name: Normalize dispatch outcome
+        id: dispatch
+        if: always()
+        shell: bash
+        run: |
+          build_outcome="${{ steps.dispatch-go.outputs.build-outcome || steps.dispatch-java.outputs.build-outcome || steps.dispatch-node.outputs.build-outcome || steps.dispatch-python.outputs.build-outcome || steps.dispatch-static-site.outputs.build-outcome }}"
+          test_outcome="${{ steps.dispatch-go.outputs.test-outcome || steps.dispatch-java.outputs.test-outcome || steps.dispatch-node.outputs.test-outcome || steps.dispatch-python.outputs.test-outcome || steps.dispatch-static-site.outputs.test-outcome }}"
+          echo "build-outcome=$build_outcome" >> "$GITHUB_OUTPUT"
+          echo "test-outcome=$test_outcome" >> "$GITHUB_OUTPUT"

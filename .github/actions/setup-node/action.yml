@@ -1,0 +1,81 @@
+name: Setup Node and run build/test
+description: >
+  Installs Node.js and the service's npm dependencies, then runs its build and test
+  commands as two distinct steps, so a failure in one is never reported as the other.
+
+inputs:
+  working-directory:
+    description: Directory containing package.json
+    required: true
+  runtime-version:
+    description: >
+      Node.js version to install. Defaults to 24, matching the runtime documented in
+      docket-todos-api's CLAUDE.md. Use setup-static-site instead for a service whose
+      build toolchain is pinned to an older Node version.
+    required: false
+    default: "24"
+  build-command:
+    description: Shell command that builds the service. Skipped when empty.
+    required: false
+    default: ""
+  test-command:
+    description: Shell command that runs the service's test suite
+    required: true
+  coverage-report-path:
+    description: >
+      Path (relative to working-directory) to the coverage report the test command
+      produces, if any. Not read by this action directly; passed through so the
+      caller workflow can hand it to the analysis stage.
+    required: false
+    default: ""
+
+outputs:
+  build-outcome:
+    description: "success, failure, or skipped, from the build step"
+    value: ${{ steps.build.outcome }}
+  test-outcome:
+    description: "success or failure, from the test step"
+    value: ${{ steps.test.outcome }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.runtime-version }}
+        cache: npm
+        cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+    - name: Install dependencies
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: npm ci
+
+    - name: Build
+      id: build
+      if: inputs.build-command != ''
+      shell: bash
+      continue-on-error: true
+      working-directory: ${{ inputs.working-directory }}
+      run: ${{ inputs.build-command }}
+
+    - name: Test
+      id: test
+      shell: bash
+      continue-on-error: true
+      working-directory: ${{ inputs.working-directory }}
+      run: ${{ inputs.test-command }}
+
+    - name: Fail the action if build or test failed
+      shell: bash
+      run: |
+        build_outcome="${{ steps.build.outcome }}"
+        test_outcome="${{ steps.test.outcome }}"
+        if [ -n "$build_outcome" ] && [ "$build_outcome" != "success" ]; then
+          echo "::error::build step failed (outcome=$build_outcome)"
+          exit 1
+        fi
+        if [ "$test_outcome" != "success" ]; then
+          echo "::error::test step failed (outcome=$test_outcome)"
+          exit 1
+        fi
