@@ -62,6 +62,7 @@ on:
 permissions:
   contents: read
   packages: write
+  security-events: write
 
 jobs:
   build-test:
@@ -156,3 +157,79 @@ jobs:
           push: false
           load: true
           tags: ${{ inputs.image-name }}:${{ steps.image-tag.outputs.value }}
+
+  # Static analysis is its own job, distinct from build-test and scan, so a
+  # contributor can tell which kind of problem they need to fix (FR-009). A fork pull
+  # request cannot see SONAR_TOKEN, so this job reports skipped rather than a false
+  # failure caused by a missing credential (FR-017).
+  analyze:
+    name: Static analysis (SonarQube Cloud)
+    needs: build-test
+    if: needs.build-test.outputs.build-result == 'success' && needs.build-test.outputs.test-result == 'success' && !github.event.pull_request.head.repo.fork
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The coverage report was produced by the test step inside build-test's
+      # dispatched composite action; re-run is unnecessary here since SonarQube Cloud
+      # only needs the report file, which sonar-project.properties already points at.
+      # Coverage enforcement itself is a SonarQube Cloud project quality-gate setting,
+      # not workflow logic (research.md #4), so it starts report-only per service
+      # until that service has a real baseline, and is only ever raised through its
+      # own reviewed change to that setting.
+      - name: SonarQube Cloud scan
+        uses: SonarSource/sonarqube-scan-action@v4
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  # Vulnerability scanning always runs, on every pull request and trunk push alike,
+  # because it needs no organization secret (FR-017) and User Story 2 requires a
+  # vulnerable image to fail before merge, not only after (research.md #5).
+  scan:
+    name: Container vulnerability scan (Trivy)
+    needs: build-test
+    if: needs.build-test.outputs.build-result == 'success' && needs.build-test.outputs.test-result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rebuild local image for scanning
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.working-directory }}
+          file: ${{ inputs.working-directory }}/${{ inputs.dockerfile-path }}
+          push: false
+          load: true
+          tags: ${{ inputs.image-name }}:${{ needs.build-test.outputs.image-tag }}
+
+      # Fails the job only on a Critical finding (research.md #5, per the maintainer's
+      # ratchet decision). High-severity findings are still reported via the SARIF
+      # upload below, visible on the pull request without blocking it, until the
+      # severity threshold is raised through its own separate reviewed change
+      # (FR-008).
+      - name: Trivy scan (Critical blocks, High is reported)
+        id: trivy-blocking
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ inputs.image-name }}:${{ needs.build-test.outputs.image-tag }}
+          severity: CRITICAL
+          exit-code: "1"
+          ignore-unfixed: false
+
+      - name: Trivy scan (report Critical and High as SARIF)
+        if: always()
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ inputs.image-name }}:${{ needs.build-test.outputs.image-tag }}
+          severity: CRITICAL,HIGH
+          exit-code: "0"
+          format: sarif
+          output: trivy-results.sarif
+
+      - name: Upload scan results
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
