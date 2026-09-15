@@ -70,6 +70,7 @@ jobs:
     outputs:
       build-result: ${{ steps.dispatch.outputs.build-outcome }}
       test-result: ${{ steps.dispatch.outputs.test-outcome }}
+      image-tag: ${{ steps.image-tag.outputs.value }}
     steps:
       - uses: actions/checkout@v4
 
@@ -136,3 +137,22 @@ jobs:
           test_outcome="${{ steps.dispatch-go.outputs.test-outcome || steps.dispatch-java.outputs.test-outcome || steps.dispatch-node.outputs.test-outcome || steps.dispatch-python.outputs.test-outcome || steps.dispatch-static-site.outputs.test-outcome }}"
           echo "build-outcome=$build_outcome" >> "$GITHUB_OUTPUT"
           echo "test-outcome=$test_outcome" >> "$GITHUB_OUTPUT"
+
+      # Container build is its own step, after language build/test, so a Dockerfile
+      # break is reported distinctly from a test failure (spec.md edge case). It
+      # always builds (even on a PR, so User Story 2 can scan it) but never pushes
+      # here — publish is a separate job, gated to a trunk merge that passed every
+      # gate (FR-012).
+      - name: Compute local image tag
+        id: image-tag
+        shell: bash
+        run: echo "value=pr-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build container image (not pushed)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.working-directory }}
+          file: ${{ inputs.working-directory }}/${{ inputs.dockerfile-path }}
+          push: false
+          load: true
+          tags: ${{ inputs.image-name }}:${{ steps.image-tag.outputs.value }}
