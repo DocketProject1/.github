@@ -309,16 +309,22 @@ jobs:
     needs: [build-test, analyze, scan, version, publish]
     if: failure()
     runs-on: ubuntu-latest
+    # GitHub Actions does not allow the `secrets` context inside an `if:`
+    # conditional (it's rejected at workflow-parse time, not just at runtime), so
+    # the presence check goes through this job-level env mapping instead — `env` is
+    # allowed in `if:`, `secrets` is not.
+    env:
+      CHAT_WEBHOOK_URL: ${{ secrets.CHAT_WEBHOOK_URL }}
     steps:
       - name: Post failure to chat webhook
-        if: ${{ secrets.CHAT_WEBHOOK_URL != '' }}
+        if: ${{ env.CHAT_WEBHOOK_URL != '' }}
         uses: slackapi/slack-github-action@v2
         with:
-          webhook: ${{ secrets.CHAT_WEBHOOK_URL }}
+          webhook: ${{ env.CHAT_WEBHOOK_URL }}
           webhook-type: incoming-webhook
           payload: |
             text: "Docket CI failed: ${{ github.repository }} (${{ github.ref_name }}) — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - name: No webhook configured
-        if: ${{ secrets.CHAT_WEBHOOK_URL == '' }}
+        if: ${{ env.CHAT_WEBHOOK_URL == '' }}
         run: echo "::warning::CHAT_WEBHOOK_URL is not set for this repository; failure notification skipped. See .github/docs/ci-secrets.md."
