@@ -404,35 +404,43 @@ jobs:
             org.opencontainers.image.version=${{ github.ref_name }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
-  # TEMPORARILY DISABLED (T028) to unblock testing build-test/analyze/scan/publish.
-  # Still throwing a workflow-parse error after the secrets-in-if fix (commit
-  # 8ca86d4) that hasn't been root-caused yet. Re-enable once that's resolved —
-  # tracked in tasks.md against T028.
+  # Fires on any failure anywhere upstream (constitution principle 8: pipeline
+  # failures MUST notify the team automatically). Skipped, not failed, when the
+  # webhook secret is absent — same fork/not-yet-configured reasoning as analyze.
   #
-  # # Fires on any failure anywhere upstream (constitution principle 8: pipeline
-  # # failures MUST notify the team automatically). Skipped, not failed, when the
-  # # webhook secret is absent — same fork/not-yet-configured reasoning as analyze.
-  # notify:
-  #   name: Notify on failure
-  #   needs: [build-test, analyze, scan, version, publish]
-  #   if: failure()
-  #   runs-on: ubuntu-latest
-  #   # GitHub Actions does not allow the `secrets` context inside an `if:`
-  #   # conditional (it's rejected at workflow-parse time, not just at runtime), so
-  #   # the presence check goes through this job-level env mapping instead — `env` is
-  #   # allowed in `if:`, `secrets` is not.
-  #   env:
-  #     CHAT_WEBHOOK_URL: ${{ secrets.CHAT_WEBHOOK_URL }}
-  #   steps:
-  #     - name: Post failure to chat webhook
-  #       if: ${{ env.CHAT_WEBHOOK_URL != '' }}
-  #       uses: slackapi/slack-github-action@v2
-  #       with:
-  #         webhook: ${{ env.CHAT_WEBHOOK_URL }}
-  #         webhook-type: incoming-webhook
-  #         payload: |
-  #           text: "Docket CI failed: ${{ github.repository }} (${{ github.ref_name }}) — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-  #
-  #     - name: No webhook configured
-  #       if: ${{ env.CHAT_WEBHOOK_URL == '' }}
-  #       run: echo "::warning::CHAT_WEBHOOK_URL is not set for this repository; failure notification skipped. See .github/docs/ci-secrets.md."
+  # `always()` instead of the default `failure()`-implied job condition, combined
+  # with an explicit check across each dependency's `result`: publish is normally
+  # 'skipped' (most runs never reach a tag), and the bare `failure()` job condition
+  # only evaluates the DIRECT needs graph's pass/fail, which still works, but being
+  # explicit here means a future job added to `needs` can't silently stop being
+  # checked the way the stale `version` reference (a job deleted in the publish
+  # redesign) sat unnoticed in this needs list the entire time it was disabled.
+  notify:
+    name: Notify on failure
+    needs: [build-test, analyze, scan, publish]
+    if: |
+      always() &&
+      (needs.build-test.result == 'failure' ||
+       needs.analyze.result == 'failure' ||
+       needs.scan.result == 'failure' ||
+       needs.publish.result == 'failure')
+    runs-on: ubuntu-latest
+    # GitHub Actions does not allow the `secrets` context inside an `if:`
+    # conditional (it's rejected at workflow-parse time, not just at runtime), so
+    # the presence check goes through this job-level env mapping instead — `env` is
+    # allowed in `if:`, `secrets` is not.
+    env:
+      CHAT_WEBHOOK_URL: ${{ secrets.CHAT_WEBHOOK_URL }}
+    steps:
+      - name: Post failure to chat webhook
+        if: ${{ env.CHAT_WEBHOOK_URL != '' }}
+        uses: slackapi/slack-github-action@v2
+        with:
+          webhook: ${{ env.CHAT_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            text: "Docket CI failed: ${{ github.repository }} (${{ github.ref_name }}) — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: No webhook configured
+        if: ${{ env.CHAT_WEBHOOK_URL == '' }}
+        run: echo "::warning::CHAT_WEBHOOK_URL is not set for this repository; failure notification skipped. See .github/docs/ci-secrets.md."
