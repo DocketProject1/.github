@@ -91,12 +91,23 @@ repository, each naming the others, merged in dependency order.
 ## What is enforced, and what is not
 
 The organisation is on a plan without branch protection, so nothing on GitHub's side
-stops a push to `main`. Two things stand in for it:
+stops a push to `main`. Branch protection and rulesets both return `403` and are not
+purchasable on this plan. Four things stand in for it:
 
 - A `PreToolUse` hook refuses a push to `main` or `master` from inside Claude Code.
-- The `SDD conventions` workflow checks branch naming, Conventional Commits, the six
-  pull request sections, and the setup check on every pull request. A red check is
-  visible to the reviewer; it does not block the merge.
+- The `SDD conventions` workflow checks branch naming, Conventional Commits, the seven
+  pull request sections, and the setup check on every pull request.
+- The `Change management` workflow checks that a pull request declares its change class
+  and risk, cites its request issue when the class is governed, and states a back-out
+  path, with a rollback plan required when the risk is high.
+- The `Release` workflow opens a Release pull request and stops. It has no merge step, so
+  no tag and no release exist until a human merges it. That gate needs no branch
+  protection, which is why it is the one enforcement here that cannot be waved through.
 
-Neither replaces review. An agent may open, describe and update a pull request, and may
-never approve one, merge its own work, or author an acceptance artifact.
+The first three are visible to the reviewer; they do not block a merge. Only the fourth
+actually holds. None of them replaces review. An agent may open, describe and update a
+pull request, and may never approve one, merge its own work, or author an acceptance
+artifact.
+
+The rules behind these checks are `docket-docs/CHANGE_MANAGEMENT.md` and
+`docket-docs/RELEASE_MANAGEMENT.md`.
