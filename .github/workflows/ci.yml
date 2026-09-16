@@ -243,37 +243,25 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
 
-  # Computed only on a trunk push — a pull request never needs a version, since it
-  # never publishes (FR-012). Reads Conventional Commit history since the last tag,
-  # which every repo already enforces via sdd-conventions.yml (research.md #2).
-  version:
-    name: Compute version
-    needs: build-test
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - id: version
-        uses: paulhatch/semantic-version@v5.4.0
-        with:
-          tag_prefix: "v"
-          version_format: "${major}.${minor}.${patch}"
-
-  # Publishes only on a trunk push where every prior gate succeeded — never from a
-  # pull request run, and never when analysis or scanning failed (FR-011, FR-012;
-  # contract guarantee 2). analyze is allowed to be 'skipped' (fork PRs can't reach
-  # trunk, but a repo without SONAR_TOKEN configured yet must not be permanently
-  # unable to publish) — scan is never allowed to be anything but 'success'.
+  # Publishes only on a tag push where every prior gate succeeded — never from a
+  # pull request or a plain trunk push (FR-011, FR-012; contract guarantee 2).
+  #
+  # There is no version-computing job here on purpose. This project's release.yml
+  # (release-please) is the single source of truth for the version: it watches main,
+  # opens a Release pull request with the proposed semver bump, and only creates the
+  # git tag (and GitHub Release) once a human merges that pull request. This job
+  # reacts to that tag rather than computing its own version, because two independent
+  # semver computations for the same artifact is exactly the "two sources of truth"
+  # failure release.yml's own header warns against. The tag name (github.ref_name) IS
+  # the version. analyze is allowed to be 'skipped' (fork PRs can't reach a tag push
+  # in practice, but a repo without SONAR_TOKEN configured yet must not be
+  # permanently unable to publish) — scan is never allowed to be anything but
+  # 'success'.
   publish:
     name: Publish image
-    needs: [build-test, analyze, scan, version]
+    needs: [build-test, analyze, scan]
     if: |
-      github.event_name == 'push' &&
+      github.ref_type == 'tag' &&
       needs.build-test.result == 'success' &&
       needs.scan.result == 'success' &&
       (needs.analyze.result == 'success' || needs.analyze.result == 'skipped')
@@ -295,8 +283,8 @@ jobs:
         run: |
           # GHCR requires a lowercase repository path.
           owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
-          image_ref="ghcr.io/${owner}/${{ inputs.image-name }}:${{ needs.version.outputs.version }}"
-          echo "version=${{ needs.version.outputs.version }}" >> "$GITHUB_OUTPUT"
+          image_ref="ghcr.io/${owner}/${{ inputs.image-name }}:${{ github.ref_name }}"
+          echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           echo "image-ref=$image_ref" >> "$GITHUB_OUTPUT"
 
       - uses: docker/build-push-action@v6
@@ -307,7 +295,7 @@ jobs:
           tags: ${{ steps.publish.outputs.image-ref }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ needs.version.outputs.version }}
+            org.opencontainers.image.version=${{ github.ref_name }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
   # TEMPORARILY DISABLED (T028) to unblock testing build-test/analyze/scan/publish.
