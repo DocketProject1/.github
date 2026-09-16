@@ -69,84 +69,177 @@ jobs:
     name: Build and test (${{ inputs.language }})
     runs-on: ubuntu-latest
     outputs:
-      build-result: ${{ steps.dispatch.outputs.build-outcome }}
-      test-result: ${{ steps.dispatch.outputs.test-outcome }}
+      build-result: ${{ steps.normalize.outputs.build-outcome }}
+      test-result: ${{ steps.normalize.outputs.test-outcome }}
       image-tag: ${{ steps.image-tag.outputs.value }}
     steps:
       - uses: actions/checkout@v4
 
-      # Exactly one of these runs, selected by inputs.language. Each composite action
-      # runs build and test as two distinct steps internally (FR-005, FR-009: a build
-      # failure is never reported as a test failure or vice versa) and re-exposes both
-      # outcomes here under one stable output name regardless of language.
-      #
-      # These reference the composite actions by full remote path, not a local `./`
-      # path. A local path resolves against whatever the checkout step above put in
-      # the workspace — and that checkout is of the CALLING repo (e.g.
-      # docket-auth-api), not this .github repo, because that's how workflow_call
-      # works. `github.workflow_sha` is the commit SHA of this reusable workflow file
-      # itself, so it always matches whatever ref the caller pinned in its own
-      # `uses: .../ci.yml@<ref>` line, without hardcoding a second reference to keep
-      # in sync by hand.
-      - name: Build and test (go)
-        id: dispatch-go
+      # Exactly one language's steps below actually runs, gated by inputs.language;
+      # every other language's steps report their own outcome as 'skipped'. Inlined
+      # directly here, not delegated to a composite action under .github/actions/,
+      # because a step's `uses:` does not accept `${{ }}` expressions at all (unlike
+      # a job-level reusable-workflow `uses:`) — there is no way to reference this
+      # repo's own actions from within this same repo's reusable workflow without
+      # either a hardcoded second ref to keep in sync by hand, or inlining. Inlining
+      # also sidesteps the earlier bug where a local `./` path resolved against the
+      # CALLER's checkout instead of this repo's, since nothing here is referenced
+      # by path at all anymore.
+
+      # --- go ---
+      - name: Determine Go version
+        id: go-version
         if: inputs.language == 'go'
-        uses: DocketProject1/.github/.github/actions/setup-go@${{ github.workflow_sha }}
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          version=$(grep -E '^go [0-9]' go.mod | awk '{print $2}')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v5
+        if: inputs.language == 'go'
         with:
-          working-directory: ${{ inputs.working-directory }}
-          build-command: ${{ inputs.build-command }}
-          test-command: ${{ inputs.test-command }}
-          coverage-report-path: ${{ inputs.coverage-report-path }}
+          go-version: ${{ steps.go-version.outputs.version }}
+          cache-dependency-path: ${{ inputs.working-directory }}/go.sum
+      - name: Build (go)
+        id: build-go
+        if: inputs.language == 'go' && inputs.build-command != ''
+        continue-on-error: true
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.build-command }}
+      - name: Test (go)
+        id: test-go
+        if: inputs.language == 'go'
+        continue-on-error: true
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.test-command }}
 
-      - name: Build and test (java)
-        id: dispatch-java
+      # --- java (Temurin 8: see docket-users-api's CLAUDE.md for why it's pinned) ---
+      - uses: actions/setup-java@v4
         if: inputs.language == 'java'
-        uses: DocketProject1/.github/.github/actions/setup-java@${{ github.workflow_sha }}
         with:
-          working-directory: ${{ inputs.working-directory }}
-          build-command: ${{ inputs.build-command }}
-          test-command: ${{ inputs.test-command }}
-          coverage-report-path: ${{ inputs.coverage-report-path }}
+          distribution: temurin
+          java-version: "8"
+          cache: maven
+          cache-dependency-path: ${{ inputs.working-directory }}/pom.xml
+      - name: Build (java)
+        id: build-java
+        if: inputs.language == 'java' && inputs.build-command != ''
+        continue-on-error: true
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.build-command }}
+      - name: Test (java)
+        id: test-java
+        if: inputs.language == 'java'
+        continue-on-error: true
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.test-command }}
 
-      - name: Build and test (node)
-        id: dispatch-node
+      # --- node ---
+      - uses: actions/setup-node@v4
         if: inputs.language == 'node'
-        uses: DocketProject1/.github/.github/actions/setup-node@${{ github.workflow_sha }}
         with:
-          working-directory: ${{ inputs.working-directory }}
-          build-command: ${{ inputs.build-command }}
-          test-command: ${{ inputs.test-command }}
-          coverage-report-path: ${{ inputs.coverage-report-path }}
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+      - name: Install dependencies (node)
+        if: inputs.language == 'node'
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: npm ci
+      - name: Build (node)
+        id: build-node
+        if: inputs.language == 'node' && inputs.build-command != ''
+        continue-on-error: true
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.build-command }}
+      - name: Test (node)
+        id: test-node
+        if: inputs.language == 'node'
+        continue-on-error: true
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.test-command }}
 
-      - name: Build and test (python)
-        id: dispatch-python
+      # --- python ---
+      - uses: actions/setup-python@v5
         if: inputs.language == 'python'
-        uses: DocketProject1/.github/.github/actions/setup-python@${{ github.workflow_sha }}
         with:
-          working-directory: ${{ inputs.working-directory }}
-          build-command: ${{ inputs.build-command }}
-          test-command: ${{ inputs.test-command }}
-          coverage-report-path: ${{ inputs.coverage-report-path }}
+          python-version: "3.11"
+      - name: Build (python)
+        id: build-python
+        if: inputs.language == 'python' && inputs.build-command != ''
+        continue-on-error: true
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.build-command }}
+      - name: Test (python)
+        id: test-python
+        if: inputs.language == 'python'
+        continue-on-error: true
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.test-command }}
 
-      - name: Build and test (static-site)
-        id: dispatch-static-site
+      # --- static-site (Node 8 build toolchain: see docket-frontend's Dockerfile) ---
+      - uses: actions/setup-node@v4
         if: inputs.language == 'static-site'
-        uses: DocketProject1/.github/.github/actions/setup-static-site@${{ github.workflow_sha }}
         with:
-          working-directory: ${{ inputs.working-directory }}
-          build-command: ${{ inputs.build-command }}
-          test-command: ${{ inputs.test-command }}
-          coverage-report-path: ${{ inputs.coverage-report-path }}
+          node-version: "8"
+          cache: npm
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+      - name: Install dependencies (static-site)
+        if: inputs.language == 'static-site'
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: npm ci
+      - name: Build (static-site)
+        id: build-static-site
+        if: inputs.language == 'static-site' && inputs.build-command != ''
+        continue-on-error: true
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.build-command }}
+      - name: Test (static-site)
+        id: test-static-site
+        if: inputs.language == 'static-site'
+        continue-on-error: true
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.test-command }}
 
-      - name: Normalize dispatch outcome
-        id: dispatch
+      # Picks the outcome of whichever language actually ran (every other language's
+      # steps report 'skipped', since their `if:` never matched) and fails the job
+      # if that language's build or test step failed - continue-on-error above is
+      # what lets both run and be reported distinctly (FR-005, FR-009) instead of
+      # the job stopping at the first failure.
+      - name: Normalize build/test outcome
+        id: normalize
         if: always()
         shell: bash
         run: |
-          build_outcome="${{ steps.dispatch-go.outputs.build-outcome || steps.dispatch-java.outputs.build-outcome || steps.dispatch-node.outputs.build-outcome || steps.dispatch-python.outputs.build-outcome || steps.dispatch-static-site.outputs.build-outcome }}"
-          test_outcome="${{ steps.dispatch-go.outputs.test-outcome || steps.dispatch-java.outputs.test-outcome || steps.dispatch-node.outputs.test-outcome || steps.dispatch-python.outputs.test-outcome || steps.dispatch-static-site.outputs.test-outcome }}"
-          echo "build-outcome=$build_outcome" >> "$GITHUB_OUTPUT"
-          echo "test-outcome=$test_outcome" >> "$GITHUB_OUTPUT"
+          case "${{ inputs.language }}" in
+            go) build="${{ steps.build-go.outcome }}"; test="${{ steps.test-go.outcome }}" ;;
+            java) build="${{ steps.build-java.outcome }}"; test="${{ steps.test-java.outcome }}" ;;
+            node) build="${{ steps.build-node.outcome }}"; test="${{ steps.test-node.outcome }}" ;;
+            python) build="${{ steps.build-python.outcome }}"; test="${{ steps.test-python.outcome }}" ;;
+            static-site) build="${{ steps.build-static-site.outcome }}"; test="${{ steps.test-static-site.outcome }}" ;;
+            *) echo "::error::unknown language '${{ inputs.language }}'"; exit 1 ;;
+          esac
+          echo "build-outcome=$build" >> "$GITHUB_OUTPUT"
+          echo "test-outcome=$test" >> "$GITHUB_OUTPUT"
+          if [ -n "$build" ] && [ "$build" != "success" ] && [ "$build" != "skipped" ]; then
+            echo "::error::build step failed for language=${{ inputs.language }} (outcome=$build)"
+            exit 1
+          fi
+          if [ "$test" != "success" ]; then
+            echo "::error::test step failed for language=${{ inputs.language }} (outcome=$test)"
+            exit 1
+          fi
 
       # Container build is its own step, after language build/test, so a Dockerfile
       # break is reported distinctly from a test failure (spec.md edge case). It
@@ -181,9 +274,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      # The coverage report was produced by the test step inside build-test's
-      # dispatched composite action; re-run is unnecessary here since SonarQube Cloud
-      # only needs the report file, which sonar-project.properties already points at.
+      # KNOWN GAP: this job runs in its own workspace, separate from build-test's, so
+      # the coverage report build-test's test step produced does NOT exist here yet
+      # — analyze currently has no coverage data to hand SonarQube Cloud despite
+      # sonar-project.properties pointing at one. Needs an actions/upload-artifact
+      # step in build-test and actions/download-artifact here before FR-006
+      # ("publish test coverage") is actually true. Tracked as a follow-up, not yet a
+      # task in tasks.md.
+      #
       # Coverage enforcement itself is a SonarQube Cloud project quality-gate setting,
       # not workflow logic (research.md #4), so it starts report-only per service
       # until that service has a real baseline, and is only ever raised through its
