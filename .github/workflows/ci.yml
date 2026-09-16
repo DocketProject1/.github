@@ -63,6 +63,11 @@ permissions:
   contents: read
   packages: write
   security-events: write
+  # Required by upload-sarif: it calls GET /repos/{owner}/{repo}/actions/runs/{run_id}
+  # to compute the SARIF analysis key on every upload, not just when waiting for
+  # processing. Without this, that call 403s with "Resource not accessible by
+  # integration" even though the scan itself succeeded.
+  actions: read
 
 jobs:
   build-test:
@@ -337,7 +342,7 @@ jobs:
 
       - name: Upload scan results
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-results.sarif
 
