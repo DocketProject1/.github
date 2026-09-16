@@ -62,12 +62,6 @@ on:
 permissions:
   contents: read
   packages: write
-  security-events: write
-  # Required by upload-sarif: it calls GET /repos/{owner}/{repo}/actions/runs/{run_id}
-  # to compute the SARIF analysis key on every upload, not just when waiting for
-  # processing. Without this, that call 403s with "Resource not accessible by
-  # integration" even though the scan itself succeeded.
-  actions: read
 
 jobs:
   build-test:
@@ -340,11 +334,20 @@ jobs:
           format: sarif
           output: trivy-results.sarif
 
+      # NOT github/codeql-action/upload-sarif: that pushes to GitHub's code scanning
+      # (Security tab), which requires GitHub Advanced Security — a paid feature on
+      # private repositories. Without it the step fails outright with "Advanced
+      # Security must be enabled for this repository to use code scanning", live-
+      # tested against every one of DocketProject1's (private) repos. Uploading the
+      # SARIF as a plain workflow artifact instead needs no such license: still
+      # downloadable and reviewable, just without the Security-tab UI.
       - name: Upload scan results
         if: always()
-        uses: github/codeql-action/upload-sarif@v4
+        uses: actions/upload-artifact@v4
         with:
-          sarif_file: trivy-results.sarif
+          name: trivy-results-${{ github.run_id }}
+          path: trivy-results.sarif
+          retention-days: 30
 
   # Publishes only on a tag push where every prior gate succeeded — never from a
   # pull request or a plain trunk push (FR-011, FR-012; contract guarantee 2).
