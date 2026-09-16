@@ -318,7 +318,7 @@ jobs:
       # (FR-008).
       - name: Trivy scan (Critical blocks, High is reported)
         id: trivy-blocking
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ inputs.image-name }}:${{ needs.build-test.outputs.image-tag }}
           severity: CRITICAL
@@ -327,7 +327,7 @@ jobs:
 
       - name: Trivy scan (report Critical and High as SARIF)
         if: always()
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ inputs.image-name }}:${{ needs.build-test.outputs.image-tag }}
           severity: CRITICAL,HIGH
