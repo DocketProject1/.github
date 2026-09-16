@@ -79,10 +79,19 @@ jobs:
       # runs build and test as two distinct steps internally (FR-005, FR-009: a build
       # failure is never reported as a test failure or vice versa) and re-exposes both
       # outcomes here under one stable output name regardless of language.
+      #
+      # These reference the composite actions by full remote path, not a local `./`
+      # path. A local path resolves against whatever the checkout step above put in
+      # the workspace — and that checkout is of the CALLING repo (e.g.
+      # docket-auth-api), not this .github repo, because that's how workflow_call
+      # works. `github.workflow_sha` is the commit SHA of this reusable workflow file
+      # itself, so it always matches whatever ref the caller pinned in its own
+      # `uses: .../ci.yml@<ref>` line, without hardcoding a second reference to keep
+      # in sync by hand.
       - name: Build and test (go)
         id: dispatch-go
         if: inputs.language == 'go'
-        uses: ./.github/actions/setup-go
+        uses: DocketProject1/.github/.github/actions/setup-go@${{ github.workflow_sha }}
         with:
           working-directory: ${{ inputs.working-directory }}
           build-command: ${{ inputs.build-command }}
@@ -92,7 +101,7 @@ jobs:
       - name: Build and test (java)
         id: dispatch-java
         if: inputs.language == 'java'
-        uses: ./.github/actions/setup-java
+        uses: DocketProject1/.github/.github/actions/setup-java@${{ github.workflow_sha }}
         with:
           working-directory: ${{ inputs.working-directory }}
           build-command: ${{ inputs.build-command }}
@@ -102,7 +111,7 @@ jobs:
       - name: Build and test (node)
         id: dispatch-node
         if: inputs.language == 'node'
-        uses: ./.github/actions/setup-node
+        uses: DocketProject1/.github/.github/actions/setup-node@${{ github.workflow_sha }}
         with:
           working-directory: ${{ inputs.working-directory }}
           build-command: ${{ inputs.build-command }}
@@ -112,7 +121,7 @@ jobs:
       - name: Build and test (python)
         id: dispatch-python
         if: inputs.language == 'python'
-        uses: ./.github/actions/setup-python
+        uses: DocketProject1/.github/.github/actions/setup-python@${{ github.workflow_sha }}
         with:
           working-directory: ${{ inputs.working-directory }}
           build-command: ${{ inputs.build-command }}
@@ -122,7 +131,7 @@ jobs:
       - name: Build and test (static-site)
         id: dispatch-static-site
         if: inputs.language == 'static-site'
-        uses: ./.github/actions/setup-static-site
+        uses: DocketProject1/.github/.github/actions/setup-static-site@${{ github.workflow_sha }}
         with:
           working-directory: ${{ inputs.working-directory }}
           build-command: ${{ inputs.build-command }}
