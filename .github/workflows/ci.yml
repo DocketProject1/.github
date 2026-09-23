@@ -51,6 +51,14 @@ on:
       CHAT_WEBHOOK_URL:
         description: Chat webhook for failure notifications. When absent, the notify job reports skipped, not failed.
         required: false
+      GITOPS_PROMOTION_TOKEN:
+        description: >-
+          Fine-grained PAT scoped to docket-gitops only (Contents + Pull requests: write).
+          Required for the promote job -- unlike SONAR_TOKEN/CHAT_WEBHOOK_URL, its absence
+          fails the job rather than skipping it (docket-gitops specs/003-dev-promotion-automation
+          FR-007): this job's entire purpose is writing to another repo, so a missing
+          credential is not "nothing to promote", it is a broken promotion.
+        required: false
     outputs:
       version:
         description: The version published from this run, or empty if this run did not publish
@@ -403,6 +411,101 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ github.ref_name }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+  # Opens (never merges -- docket-gitops specs/003-dev-promotion-automation FR-005) a
+  # promotion.md-shaped pull request against docket-gitops, bumping environments/dev's
+  # image tag for this service. GITHUB_TOKEN cannot write to a different repository, so
+  # this needs GITOPS_PROMOTION_TOKEN, a fine-grained PAT scoped to docket-gitops only.
+  promote:
+    name: Open dev promotion PR
+    needs: publish
+    if: needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout docket-gitops
+        uses: actions/checkout@v4
+        with:
+          repository: DocketProject1/docket-gitops
+          token: ${{ secrets.GITOPS_PROMOTION_TOKEN }}
+          path: gitops
+          # No continue-on-error: a bad/missing token must fail this job (FR-007), not
+          # look like "nothing to promote".
+
+      - name: Compute service key and read/write the dev image tag
+        id: promote
+        working-directory: gitops
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo curl -sL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+          # docket-auth-api -> auth_api ; docket-log-message-processor -> log_message_processor
+          service_key="$(echo '${{ inputs.image-name }}' | sed -E 's/^docket-//; s/-/_/g')"
+          new_version="${{ needs.publish.outputs.version }}"
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          new_image="ghcr.io/${owner}/${{ inputs.image-name }}:${new_version}"
+
+          # Read BEFORE writing (FR-003) -- this is what a rollback returns to.
+          previous_image="$(yq ".${service_key}.image" environments/dev/values.yaml)"
+          previous_version="${previous_image##*:}"
+
+          yq -i ".${service_key}.image = \"${new_image}\"" environments/dev/values.yaml
+
+          {
+            echo "| $(date -u +%F) | ${{ inputs.image-name }} | ${new_version} | dev | (this PR's merge commit) | | ${previous_version} |"
+          } >> RELEASES.md
+
+          {
+            echo "service_key=${service_key}"
+            echo "new_version=${new_version}"
+            echo "previous_version=${previous_version}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open the promotion pull request
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ secrets.GITOPS_PROMOTION_TOKEN }}
+          path: gitops
+          branch: promote/dev-${{ inputs.image-name }}-${{ steps.promote.outputs.new_version }}
+          commit-message: "chore(promote): ${{ inputs.image-name }} ${{ steps.promote.outputs.previous_version }} -> ${{ steps.promote.outputs.new_version }} in dev"
+          title: "Promote ${{ inputs.image-name }} to ${{ steps.promote.outputs.new_version }} in dev"
+          body: |
+            Change-Type: normal
+            Risk: low
+
+            ## What changes
+
+            ${{ inputs.image-name }} ${{ steps.promote.outputs.previous_version }} -> ${{ steps.promote.outputs.new_version }} in dev.
+
+            ## Why
+
+            Automated by docket-gitops specs/003-dev-promotion-automation, opened after
+            ${{ github.repository }}'s publish job pushed this version to GHCR on tag
+            ${{ github.ref_name }}.
+
+            Verified in the environment below this one: none; dev is the first environment.
+
+            ## Tasks
+
+            ${{ github.repository }} ${{ github.ref_name }}
+
+            ## How it is verified
+
+            ```
+            Image reference updated in environments/dev/values.yaml; RELEASES.md row appended
+            with Previous version = ${{ steps.promote.outputs.previous_version }}.
+            ```
+
+            ## Risk and rollback
+
+            Previous version: ${{ steps.promote.outputs.previous_version }}
+            Rollback: tier 1 of runbooks/rollback-release.md, reverting this merge commit.
+
+            ## What this PR does not do
+
+            Does not touch staging or production. Does not merge itself -- a human reviews
+            and merges this pull request; nothing in this workflow approves or merges it.
 
   # Fires on any failure anywhere upstream (constitution principle 8: pipeline
   # failures MUST notify the team automatically). Skipped, not failed, when the
