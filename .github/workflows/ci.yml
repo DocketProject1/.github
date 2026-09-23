@@ -1,0 +1,446 @@
+name: Docket service CI
+
+# Shared across every DocketProject1 service repository. The source of truth is
+# DocketProject1/.github's .github/workflows/ci.yml; a caller repository never edits
+# a copy of this file, it references this one by a pinned commit SHA or tag. See
+# specs/001-reusable-ci-pipelines/contracts/ci-workflow-contract.md for the full
+# contract this file promises to every caller.
+#
+# CI builds and publishes artifacts only. It MUST NOT deploy anything — see
+# constitution principle 5. There is deliberately no step anywhere in this file that
+# touches a Kubernetes cluster, Argo CD, or any running environment.
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        description: "go | java | node | python | static-site"
+        type: string
+        required: true
+      working-directory:
+        description: Directory containing the service's own source, relative to its repository root
+        type: string
+        required: true
+      build-command:
+        description: Shell command that builds the service. Skipped when empty.
+        type: string
+        required: false
+        default: ""
+      test-command:
+        description: Shell command that runs the service's existing automated test command
+        type: string
+        required: true
+      dockerfile-path:
+        description: Path to the service's own multi-stage Dockerfile, relative to working-directory
+        type: string
+        required: false
+        default: Dockerfile
+      image-name:
+        description: Unqualified GHCR image name for this service
+        type: string
+        required: true
+      coverage-report-path:
+        description: Path (relative to working-directory) to the coverage report the test command produces, if any. Coverage stage is skipped when empty.
+        type: string
+        required: false
+        default: ""
+    secrets:
+      SONAR_TOKEN:
+        description: SonarQube Cloud token. When absent, the analyze job reports skipped, not failed.
+        required: false
+      CHAT_WEBHOOK_URL:
+        description: Chat webhook for failure notifications. When absent, the notify job reports skipped, not failed.
+        required: false
+    outputs:
+      version:
+        description: The version published from this run, or empty if this run did not publish
+        value: ${{ jobs.publish.outputs.version }}
+      image-ref:
+        description: Full ghcr.io reference published from this run, or empty if this run did not publish
+        value: ${{ jobs.publish.outputs.image-ref }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-test:
+    name: Build and test (${{ inputs.language }})
+    runs-on: ubuntu-latest
+    outputs:
+      build-result: ${{ steps.normalize.outputs.build-outcome }}
+      test-result: ${{ steps.normalize.outputs.test-outcome }}
+      image-tag: ${{ steps.image-tag.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Exactly one language's steps below actually runs, gated by inputs.language;
+      # every other language's steps report their own outcome as 'skipped'. Inlined
+      # directly here, not delegated to a composite action under .github/actions/,
+      # because a step's `uses:` does not accept `${{ }}` expressions at all (unlike
+      # a job-level reusable-workflow `uses:`) — there is no way to reference this
+      # repo's own actions from within this same repo's reusable workflow without
+      # either a hardcoded second ref to keep in sync by hand, or inlining. Inlining
+      # also sidesteps the earlier bug where a local `./` path resolved against the
+      # CALLER's checkout instead of this repo's, since nothing here is referenced
+      # by path at all anymore.
+
+      # --- go ---
+      - name: Determine Go version
+        id: go-version
+        if: inputs.language == 'go'
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          version=$(grep -E '^go [0-9]' go.mod | awk '{print $2}')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v5
+        if: inputs.language == 'go'
+        with:
+          go-version: ${{ steps.go-version.outputs.version }}
+          cache-dependency-path: ${{ inputs.working-directory }}/go.sum
+      - name: Build (go)
+        id: build-go
+        if: inputs.language == 'go' && inputs.build-command != ''
+        continue-on-error: true
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.build-command }}
+      - name: Test (go)
+        id: test-go
+        if: inputs.language == 'go'
+        continue-on-error: true
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.test-command }}
+
+      # --- java (Temurin 8: see docket-users-api's CLAUDE.md for why it's pinned) ---
+      - uses: actions/setup-java@v4
+        if: inputs.language == 'java'
+        with:
+          distribution: temurin
+          java-version: "8"
+          cache: maven
+          cache-dependency-path: ${{ inputs.working-directory }}/pom.xml
+      - name: Build (java)
+        id: build-java
+        if: inputs.language == 'java' && inputs.build-command != ''
+        continue-on-error: true
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.build-command }}
+      - name: Test (java)
+        id: test-java
+        if: inputs.language == 'java'
+        continue-on-error: true
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.test-command }}
+
+      # --- node ---
+      - uses: actions/setup-node@v4
+        if: inputs.language == 'node'
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+      - name: Install dependencies (node)
+        if: inputs.language == 'node'
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: npm ci
+      - name: Build (node)
+        id: build-node
+        if: inputs.language == 'node' && inputs.build-command != ''
+        continue-on-error: true
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.build-command }}
+      - name: Test (node)
+        id: test-node
+        if: inputs.language == 'node'
+        continue-on-error: true
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.test-command }}
+
+      # --- python ---
+      - uses: actions/setup-python@v5
+        if: inputs.language == 'python'
+        with:
+          python-version: "3.11"
+      - name: Build (python)
+        id: build-python
+        if: inputs.language == 'python' && inputs.build-command != ''
+        continue-on-error: true
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.build-command }}
+      - name: Test (python)
+        id: test-python
+        if: inputs.language == 'python'
+        continue-on-error: true
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.test-command }}
+
+      # --- static-site (Node 8 build toolchain: see docket-frontend's Dockerfile) ---
+      - uses: actions/setup-node@v4
+        if: inputs.language == 'static-site'
+        with:
+          node-version: "8"
+          cache: npm
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+      - name: Install dependencies (static-site)
+        if: inputs.language == 'static-site'
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: npm ci
+      - name: Build (static-site)
+        id: build-static-site
+        if: inputs.language == 'static-site' && inputs.build-command != ''
+        continue-on-error: true
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.build-command }}
+      - name: Test (static-site)
+        id: test-static-site
+        if: inputs.language == 'static-site'
+        continue-on-error: true
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.test-command }}
+
+      # Picks the outcome of whichever language actually ran (every other language's
+      # steps report 'skipped', since their `if:` never matched) and fails the job
+      # if that language's build or test step failed - continue-on-error above is
+      # what lets both run and be reported distinctly (FR-005, FR-009) instead of
+      # the job stopping at the first failure.
+      - name: Normalize build/test outcome
+        id: normalize
+        if: always()
+        shell: bash
+        run: |
+          case "${{ inputs.language }}" in
+            go) build="${{ steps.build-go.outcome }}"; test="${{ steps.test-go.outcome }}" ;;
+            java) build="${{ steps.build-java.outcome }}"; test="${{ steps.test-java.outcome }}" ;;
+            node) build="${{ steps.build-node.outcome }}"; test="${{ steps.test-node.outcome }}" ;;
+            python) build="${{ steps.build-python.outcome }}"; test="${{ steps.test-python.outcome }}" ;;
+            static-site) build="${{ steps.build-static-site.outcome }}"; test="${{ steps.test-static-site.outcome }}" ;;
+            *) echo "::error::unknown language '${{ inputs.language }}'"; exit 1 ;;
+          esac
+          echo "build-outcome=$build" >> "$GITHUB_OUTPUT"
+          echo "test-outcome=$test" >> "$GITHUB_OUTPUT"
+          if [ -n "$build" ] && [ "$build" != "success" ] && [ "$build" != "skipped" ]; then
+            echo "::error::build step failed for language=${{ inputs.language }} (outcome=$build)"
+            exit 1
+          fi
+          if [ "$test" != "success" ]; then
+            echo "::error::test step failed for language=${{ inputs.language }} (outcome=$test)"
+            exit 1
+          fi
+
+      # Container build is its own step, after language build/test, so a Dockerfile
+      # break is reported distinctly from a test failure (spec.md edge case). It
+      # always builds (even on a PR, so User Story 2 can scan it) but never pushes
+      # here — publish is a separate job, gated to a trunk merge that passed every
+      # gate (FR-012).
+      - name: Compute local image tag
+        id: image-tag
+        shell: bash
+        run: echo "value=pr-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build container image (not pushed)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.working-directory }}
+          file: ${{ inputs.working-directory }}/${{ inputs.dockerfile-path }}
+          push: false
+          load: true
+          tags: ${{ inputs.image-name }}:${{ steps.image-tag.outputs.value }}
+
+  # Static analysis is its own job, distinct from build-test and scan, so a
+  # contributor can tell which kind of problem they need to fix (FR-009). A fork pull
+  # request cannot see SONAR_TOKEN, so this job reports skipped rather than a false
+  # failure caused by a missing credential (FR-017).
+  analyze:
+    name: Static analysis (SonarQube Cloud)
+    needs: build-test
+    if: needs.build-test.result == 'success' && !github.event.pull_request.head.repo.fork
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # KNOWN GAP: this job runs in its own workspace, separate from build-test's, so
+      # the coverage report build-test's test step produced does NOT exist here yet
+      # — analyze currently has no coverage data to hand SonarQube Cloud despite
+      # sonar-project.properties pointing at one. Needs an actions/upload-artifact
+      # step in build-test and actions/download-artifact here before FR-006
+      # ("publish test coverage") is actually true. Tracked as a follow-up, not yet a
+      # task in tasks.md.
+      #
+      # Coverage enforcement itself is a SonarQube Cloud project quality-gate setting,
+      # not workflow logic (research.md #4), so it starts report-only per service
+      # until that service has a real baseline, and is only ever raised through its
+      # own reviewed change to that setting.
+      - name: SonarQube Cloud scan
+        uses: SonarSource/sonarqube-scan-action@v4
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  # Vulnerability scanning always runs, on every pull request and trunk push alike,
+  # because it needs no organization secret (FR-017) and User Story 2 requires a
+  # vulnerable image to fail before merge, not only after (research.md #5).
+  scan:
+    name: Container vulnerability scan (Trivy)
+    needs: build-test
+    if: needs.build-test.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rebuild local image for scanning
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.working-directory }}
+          file: ${{ inputs.working-directory }}/${{ inputs.dockerfile-path }}
+          push: false
+          load: true
+          tags: ${{ inputs.image-name }}:${{ needs.build-test.outputs.image-tag }}
+
+      # Fails the job only on a Critical finding (research.md #5, per the maintainer's
+      # ratchet decision). High-severity findings are still reported via the SARIF
+      # upload below, visible on the pull request without blocking it, until the
+      # severity threshold is raised through its own separate reviewed change
+      # (FR-008).
+      - name: Trivy scan (Critical blocks, High is reported)
+        id: trivy-blocking
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ inputs.image-name }}:${{ needs.build-test.outputs.image-tag }}
+          severity: CRITICAL
+          exit-code: "1"
+          ignore-unfixed: false
+
+      - name: Trivy scan (report Critical and High as SARIF)
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ inputs.image-name }}:${{ needs.build-test.outputs.image-tag }}
+          severity: CRITICAL,HIGH
+          exit-code: "0"
+          format: sarif
+          output: trivy-results.sarif
+
+      # NOT github/codeql-action/upload-sarif: that pushes to GitHub's code scanning
+      # (Security tab), which requires GitHub Advanced Security — a paid feature on
+      # private repositories. Without it the step fails outright with "Advanced
+      # Security must be enabled for this repository to use code scanning", live-
+      # tested against every one of DocketProject1's (private) repos. Uploading the
+      # SARIF as a plain workflow artifact instead needs no such license: still
+      # downloadable and reviewable, just without the Security-tab UI.
+      - name: Upload scan results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-results-${{ github.run_id }}
+          path: trivy-results.sarif
+          retention-days: 30
+
+  # Publishes only on a tag push where every prior gate succeeded — never from a
+  # pull request or a plain trunk push (FR-011, FR-012; contract guarantee 2).
+  #
+  # There is no version-computing job here on purpose. This project's release.yml
+  # (release-please) is the single source of truth for the version: it watches main,
+  # opens a Release pull request with the proposed semver bump, and only creates the
+  # git tag (and GitHub Release) once a human merges that pull request. This job
+  # reacts to that tag rather than computing its own version, because two independent
+  # semver computations for the same artifact is exactly the "two sources of truth"
+  # failure release.yml's own header warns against. The tag name (github.ref_name) IS
+  # the version. analyze is allowed to be 'skipped' (fork PRs can't reach a tag push
+  # in practice, but a repo without SONAR_TOKEN configured yet must not be
+  # permanently unable to publish) — scan is never allowed to be anything but
+  # 'success'.
+  publish:
+    name: Publish image
+    needs: [build-test, analyze, scan]
+    if: |
+      github.ref_type == 'tag' &&
+      needs.build-test.result == 'success' &&
+      needs.scan.result == 'success' &&
+      (needs.analyze.result == 'success' || needs.analyze.result == 'skipped')
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.publish.outputs.version }}
+      image-ref: ${{ steps.publish.outputs.image-ref }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: publish
+        shell: bash
+        run: |
+          # GHCR requires a lowercase repository path.
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          image_ref="ghcr.io/${owner}/${{ inputs.image-name }}:${{ github.ref_name }}"
+          echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          echo "image-ref=$image_ref" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.working-directory }}
+          file: ${{ inputs.working-directory }}/${{ inputs.dockerfile-path }}
+          push: true
+          tags: ${{ steps.publish.outputs.image-ref }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+  # Fires on any failure anywhere upstream (constitution principle 8: pipeline
+  # failures MUST notify the team automatically). Skipped, not failed, when the
+  # webhook secret is absent — same fork/not-yet-configured reasoning as analyze.
+  #
+  # `always()` instead of the default `failure()`-implied job condition, combined
+  # with an explicit check across each dependency's `result`: publish is normally
+  # 'skipped' (most runs never reach a tag), and the bare `failure()` job condition
+  # only evaluates the DIRECT needs graph's pass/fail, which still works, but being
+  # explicit here means a future job added to `needs` can't silently stop being
+  # checked the way the stale `version` reference (a job deleted in the publish
+  # redesign) sat unnoticed in this needs list the entire time it was disabled.
+  notify:
+    name: Notify on failure
+    needs: [build-test, analyze, scan, publish]
+    if: |
+      always() &&
+      (needs.build-test.result == 'failure' ||
+       needs.analyze.result == 'failure' ||
+       needs.scan.result == 'failure' ||
+       needs.publish.result == 'failure')
+    runs-on: ubuntu-latest
+    # GitHub Actions does not allow the `secrets` context inside an `if:`
+    # conditional (it's rejected at workflow-parse time, not just at runtime), so
+    # the presence check goes through this job-level env mapping instead — `env` is
+    # allowed in `if:`, `secrets` is not.
+    env:
+      CHAT_WEBHOOK_URL: ${{ secrets.CHAT_WEBHOOK_URL }}
+    steps:
+      - name: Post failure to chat webhook
+        if: ${{ env.CHAT_WEBHOOK_URL != '' }}
+        uses: slackapi/slack-github-action@v2
+        with:
+          webhook: ${{ env.CHAT_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            text: "Docket CI failed: ${{ github.repository }} (${{ github.ref_name }}) — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: No webhook configured
+        if: ${{ env.CHAT_WEBHOOK_URL == '' }}
+        run: echo "::warning::CHAT_WEBHOOK_URL is not set for this repository; failure notification skipped. See .github/docs/ci-secrets.md."
